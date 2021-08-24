@@ -1,30 +1,16 @@
 #include "unp.h"
 
-void sig_chld(int signo) {
-	pid_t pid;
-	int stat;
-
-	while((pid=waitpid(-1, &stat, WNOHANG)) > 0) {
-		printf("Child %d Terminated\n", pid);
-	}
-
-}
-
-
 int main(int argc, char **argv) {
-	int listenfd, connfd, udpfd, nready, maxfdp1;
-	char buf[MAXLINE];
-	pid_t cpid;
-	fd_set rset;
-	ssize_t n;
-	socklen_t len;
+	int i, listenfd, udpfd, connfd, sockfd, maxfd, maxi; 
+	int cli[FD_SETSIZE], nready;
+	fd_set rset, allset;
+	struct sockaddr_in saddr, caddr;
+	socklen_t clen;
 	const int on = 1;
-	struct sockaddr_in caddr, saddr;
-	void sig_chld(int);
+	ssize_t n;
+	char buf[MAXLINE];
 
-	/* TDP Socket */
 	listenfd = Socket(AF_INET, SOCK_STREAM, 0);
-
 	bzero(&saddr, sizeof(saddr));
 	saddr.sin_family = AF_INET;
 	saddr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -35,44 +21,67 @@ int main(int argc, char **argv) {
 
 	Listen(listenfd, LISTENQ);
 
-	/* UDP Socket */
 	udpfd = Socket(AF_INET, SOCK_DGRAM, 0);
-
 	bzero(&saddr, sizeof(saddr));
 	saddr.sin_family = AF_INET;
 	saddr.sin_addr.s_addr = htonl(INADDR_ANY);
 	saddr.sin_port = htons(SERV_PORT);
 
 	Bind(udpfd, (SA *) &saddr, sizeof(saddr));
-	Signal(SIGCHLD, sig_chld);
 
-	FD_ZERO(&rset);
-	maxfdp1 = max(listenfd, udpfd)+1;
+	/* initializee */
+	maxfd = max(listenfd, udpfd);
+	maxi = -1;
+	for(i=0; i<FD_SETSIZE; i++) cli[i] = -1;
+	FD_ZERO(&allset);
+	FD_SET(listenfd, &allset);
+	FD_SET(udpfd, &allset);
+
 	for( ; ; ) {
-		FD_SET(listenfd, &rset);
-		FD_SET(udpfd,&rset);
-		if((nready=select(maxfdp1, &rset, NULL, NULL, NULL)) < 0) {
-			if(errno == EINTR) continue;
-			else err_sys("Select Error");
-		}
-
-		if(FD_ISSET(listenfd, &rset)) {
-			len = sizeof(caddr);
-			connfd = Accept(listenfd, (SA *) &caddr, &len);
-
-			if((cpid = Fork()) == 0) {
-				Close(listenfd);
-				str_echo(connfd);
-				exit(0);
-			}
-			Close(connfd);
-		}
+		rset = allset;
+		nready = Select(maxfd+1, &rset, NULL, NULL, NULL);
 
 		if(FD_ISSET(udpfd, &rset)) {
-			len = sizeof(caddr);
-			n = Recvfrom(udpfd, buf, MAXLINE, 0, (SA *) &caddr, &len);
+			clen = sizeof(caddr);
+			n = Recvfrom(udpfd, buf, MAXLINE, 0, (SA *) &caddr, &clen);
 
-			Sendto(udpfd, buf, n, 0, (SA *) &caddr, len);
+			Sendto(udpfd, buf, n, 0, (SA *) &caddr, clen);
 		}
-	}
-}
+	
+		/* New Connection */
+		if(FD_ISSET(listenfd, &rset)) {
+			clen = sizeof(caddr);
+			connfd = Accept(listenfd, (SA *) &caddr, &clen);
+
+			for(i = 0; i < FD_SETSIZE; i++) {
+				if(cli[i]<0) {
+					cli[i] = connfd;
+					break;
+				}
+			}
+			if(i == FD_SETSIZE) err_quit("Maximum Client");
+			FD_SET(connfd, &allset);
+			if(connfd > maxfd) maxfd = connfd;
+			if(i > maxi) maxi = i;
+
+			if(--nready <= 0) continue;
+		}
+
+		/* Check */
+		for(i = 0; i <= maxi; i++) {
+			if((sockfd = cli[i]) < 0) continue;
+			if(FD_ISSET(sockfd, &rset)) {
+				if((n = Read(sockfd, buf, MAXLINE)) == 0) {
+					Close(sockfd);
+					FD_CLR(sockfd, &allset);
+					cli[i] = -1;
+				} else {
+					Writen(sockfd, buf, n);
+				}
+
+				if(--nready <= 0) break;
+			}
+		}
+	}		
+}	
+
