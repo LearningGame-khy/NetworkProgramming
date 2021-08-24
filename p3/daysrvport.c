@@ -4,11 +4,12 @@
 int
 main(int argc, char **argv)
 {
-	int					listenfd, connfd;
+	int			listenfd, connfd;
 	struct sockaddr_in	servaddr, cliaddr;
-	socklen_t			len;
-	char				buff[MAXLINE];
-	time_t				ticks;
+	socklen_t		len;
+	char			buff[MAXLINE];
+	time_t			ticks;
+	pid_t			pid;
 
 	listenfd = Socket(AF_INET, SOCK_STREAM, 0);
 
@@ -25,15 +26,20 @@ main(int argc, char **argv)
 	Listen(listenfd, LISTENQ);
 
 	for ( ; ; ) {
+		len = sizeof(cliaddr);
 		connfd = Accept(listenfd, (SA *) &cliaddr, &len);
-		// inet_pton() <-> inet_ntop()
-		// htons() <-> ntohs() || h(host byte order), n(network byte order)
-		// network byte order(Big endian) bigger first, lower last
-		printf("connection from %s, port %d\n", Inet_ntop(AF_INET, &cliaddr.sin_addr, buff, sizeof(buff)), ntohs(cliaddr.sin_port));
+		printf("connection from %s, port %d\n", inet_ntop(AF_INET, &cliaddr.sin_addr, buff, sizeof(buff)), ntohs(cliaddr.sin_port));
 
-        ticks = time(NULL);
-        snprintf(buff, sizeof(buff), "%.24s\r\n", ctime(&ticks));
-        Write(connfd, buff, strlen(buff));
+		if ((pid=fork())==0) {
+			Close(listenfd);
+        		
+			ticks = time(NULL);
+        		snprintf(buff, sizeof(buff), "%.24s\r\n", ctime(&ticks));
+        		Write(connfd, buff, strlen(buff));
+			
+			Close(connfd);
+			exit(0);
+		}
 
 		Close(connfd);
 	}
